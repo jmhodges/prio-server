@@ -8,6 +8,21 @@
             "type": "string",
             "logicalType": "uuid",
             "doc": "UUID of the packet that failed validation."
+        },
+        {
+            "name": "rejection_reason",
+            "type": {
+                "type": "enum",
+                "name": "rejection_reason",
+                "symbols": [
+                    "INVALID_PARAMETERS",
+                    "INVALID_CIPHERTEXT",
+                    "INVALID_PACKET",
+                    "MISSING_PEER_VALIDATION",
+                    "INVALID_PROOF"
+                ]
+            },
+            "doc": "The reason that a packet was rejected."
         }
     ]
 }

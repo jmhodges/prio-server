@@ -994,8 +994,41 @@ impl Header for SumPart {
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum InvalidPacketRejectionReason {
+    InvalidParameters,
+    InvalidCiphertext,
+    InvalidPacket,
+    MissingPeerValidation,
+    InvalidProof,
+}
+
+impl InvalidPacketRejectionReason {
+    pub fn index(&self) -> i32 {
+        match self {
+            Self::InvalidParameters => 0,
+            Self::InvalidCiphertext => 1,
+            Self::InvalidPacket => 2,
+            Self::MissingPeerValidation => 3,
+            Self::InvalidProof => 4,
+        }
+    }
+
+    pub fn symbol(&self) -> String {
+        match self {
+            Self::InvalidParameters => "INVALID_PARAMETERS".to_owned(),
+            Self::InvalidCiphertext => "INVALID_CIPHERTEXT".to_owned(),
+            Self::InvalidPacket => "INVALID_PACKET".to_owned(),
+            Self::MissingPeerValidation => "MISSING_PEER_VALIDATION".to_owned(),
+            Self::InvalidProof => "INVALID_PROOF".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct InvalidPacket {
     pub uuid: Uuid,
+    pub rejection_reason: InvalidPacketRejectionReason,
 }
 
 impl Packet for InvalidPacket {
@@ -1034,6 +1067,13 @@ impl Packet for InvalidPacket {
         };
 
         record.put("uuid", Value::Uuid(self.uuid));
+        record.put(
+            "rejection_reason",
+            Value::Enum(
+                self.rejection_reason.index(),
+                self.rejection_reason.symbol(),
+            ),
+        );
 
         writer.append(record).map_err(|e| {
             Error::AvroError("failed to append record to Avro writer".to_owned(), e)
@@ -1283,12 +1323,15 @@ mod tests {
         let packets = &[
             InvalidPacket {
                 uuid: Uuid::new_v4(),
+                rejection_reason: InvalidPacketRejectionReason::InvalidParameters,
             },
             InvalidPacket {
                 uuid: Uuid::new_v4(),
+                rejection_reason: InvalidPacketRejectionReason::InvalidProof,
             },
             InvalidPacket {
                 uuid: Uuid::new_v4(),
+                rejection_reason: InvalidPacketRejectionReason::InvalidCiphertext,
             },
         ];
 

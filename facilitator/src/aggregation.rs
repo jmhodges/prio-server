@@ -1,8 +1,8 @@
 use crate::{
     batch::{Batch, BatchReader, BatchWriter},
     idl::{
-        IngestionDataSharePacket, IngestionHeader, InvalidPacket, Packet, SumPart,
-        ValidationHeader, ValidationPacket,
+        IngestionDataSharePacket, IngestionHeader, InvalidPacket, InvalidPacketRejectionReason,
+        Packet, SumPart, ValidationHeader, ValidationPacket,
     },
     transport::{SignableTransport, VerifiableAndDecryptableTransport, VerifiableTransport},
     BatchSigningKey, Error,
@@ -91,7 +91,11 @@ impl<'a> BatchAggregator<'a> {
             self.aggregation_batch
                 .packet_file_writer(|mut packet_file_writer| {
                     for invalid_uuid in invalid_uuids {
-                        InvalidPacket { uuid: invalid_uuid }.write(&mut packet_file_writer)?
+                        InvalidPacket {
+                            uuid: invalid_uuid,
+                            rejection_reason: InvalidPacketRejectionReason::InvalidParameters,
+                        }
+                        .write(&mut packet_file_writer)?
                     }
                     Ok(())
                 })?;
