@@ -8,6 +8,7 @@ use prio::{finite_field::Field, server::VerificationMessage};
 use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom,
+    fmt::Display,
     io::{Read, Write},
     num::TryFromIntError,
 };
@@ -1132,6 +1133,18 @@ impl InvalidPacketRejectionReason {
             Self::InvalidPacket => Value::Enum(2, "INVALID_PACKET".to_owned()),
             Self::MissingPeerValidation => Value::Enum(3, "MISSING_PEER_VALIDATION".to_owned()),
             Self::InvalidProof => Value::Enum(4, "INVALID_PROOF".to_owned()),
+        }
+    }
+}
+
+impl Display for InvalidPacketRejectionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        match *self {
+            Self::InvalidParameters => f.write_str("INVALID_PARAMETERS"),
+            Self::InvalidCiphertext => f.write_str("INVALID_CIPHERTEXT"),
+            Self::InvalidPacket => f.write_str("INVALID_PACKET"),
+            Self::MissingPeerValidation => f.write_str("MISSING_PEER_VALIDATION"),
+            Self::InvalidProof => f.write_str("INVALID_PROOF"),
         }
     }
 }

@@ -2,7 +2,7 @@ use crate::{
     batch::{Batch, BatchReader, BatchWriter},
     idl::{
         IngestionDataSharePacket, IngestionHeader, InvalidPacket, InvalidPacketRejectionReason,
-        Packet, SumPart, ValidationHeader, ValidationPacket,
+        Packet, PolynomialPoints, SumPart, ValidationHeader, ValidationPacket,
     },
     transport::{SignableTransport, VerifiableAndDecryptableTransport, VerifiableTransport},
     BatchSigningKey, Error,
@@ -89,8 +89,6 @@ impl<'a> BatchAggregator<'a> {
             self.aggregate_share(&batch_id.0, &batch_id.1, &mut servers, &mut invalid_packets)?;
         }
 
-        // TODO(timg) what exactly do we write out when there are no invalid
-        // packets? Right now we will write an empty file.
         let invalid_packets_digest =
             self.aggregation_batch
                 .packet_file_writer(|mut packet_file_writer| {
@@ -168,7 +166,7 @@ impl<'a> BatchAggregator<'a> {
         batch_id: &Uuid,
         batch_date: &NaiveDateTime,
         servers: &mut Vec<Server>,
-        invalid_uuids: &mut Vec<InvalidPacket>,
+        invalid_packets: &mut Vec<InvalidPacket>,
     ) -> Result<()> {
         let mut ingestion_batch: BatchReader<'_, IngestionHeader, IngestionDataSharePacket> =
             BatchReader::new(
@@ -219,18 +217,54 @@ impl<'a> BatchAggregator<'a> {
                 match ValidationPacket::read(&mut peer_validation_packet_reader) {
                     Ok(p) => Some(p),
                     Err(Error::EofError) => None,
+                    Err(Error::MalformedDataPacketError(s)) => {
+                        info!(
+                            "encountered malformed peer validation packet in batch {}: {}",
+                            batch_id, s
+                        );
+                        invalid_packets.push(InvalidPacket {
+                            batch_uuid: batch_id.clone(),
+                            uuid: Uuid::nil(),
+                            rejection_reason: InvalidPacketRejectionReason::InvalidPacket,
+                        });
+                        continue;
+                    }
                     Err(e) => return Err(e.into()),
                 };
             let own_validation_packet =
                 match ValidationPacket::read(&mut own_validation_packet_reader) {
                     Ok(p) => Some(p),
                     Err(Error::EofError) => None,
+                    Err(Error::MalformedDataPacketError(s)) => {
+                        info!(
+                            "encountered malformed own validation packet in batch {}: {}",
+                            batch_id, s
+                        );
+                        invalid_packets.push(InvalidPacket {
+                            batch_uuid: batch_id.clone(),
+                            uuid: Uuid::nil(),
+                            rejection_reason: InvalidPacketRejectionReason::InvalidPacket,
+                        });
+                        continue;
+                    }
                     Err(e) => return Err(e.into()),
                 };
             let ingestion_packet =
                 match IngestionDataSharePacket::read(&mut ingestion_packet_reader) {
                     Ok(p) => Some(p),
                     Err(Error::EofError) => None,
+                    Err(Error::MalformedDataPacketError(s)) => {
+                        info!(
+                            "encountered malformed ingestion packet in batch {}: {}",
+                            batch_id, s
+                        );
+                        invalid_packets.push(InvalidPacket {
+                            batch_uuid: batch_id.clone(),
+                            uuid: Uuid::nil(),
+                            rejection_reason: InvalidPacketRejectionReason::InvalidPacket,
+                        });
+                        continue;
+                    }
                     Err(e) => return Err(e.into()),
                 };
 
@@ -250,6 +284,10 @@ impl<'a> BatchAggregator<'a> {
                     ));
                 }
             };
+
+            // case where either validation packet is a reject
+
+            // case where UUIDs don't line up
 
             // TODO(timg) we need to make sure we are evaluating a valid triple
             // of (peer validation, own validation, ingestion), i.e., they must
@@ -272,6 +310,13 @@ impl<'a> BatchAggregator<'a> {
                     peer_validation_packet.uuid,
                     own_validation_packet.uuid,
                     ingestion_packet.uuid));
+            }
+
+            // If either validation packet is a reject,
+            if check_rejection_reason(peer_validation_packet, batch_id, invalid_packets)
+                || check_rejection_reason(own_validation_packet, batch_id, invalid_packets)
+            {
+                continue;
             }
 
             let mut did_aggregate_shares = false;
@@ -330,4 +375,29 @@ impl<'a> BatchAggregator<'a> {
 
         Ok(())
     }
+}
+
+/// Checks if the ValidationPacket contains a rejection reason. If so, pushes a
+/// corresponding InvalidPacket into the provided Vec<InvalidPacket> and returns
+/// true. Otherwise returns false.
+fn check_rejection_reason(
+    packet: &ValidationPacket,
+    batch_id: &Uuid,
+    invalid_packets: &mut Vec<InvalidPacket>,
+) -> PolynomialPoints {
+    if let Some(rejection_reason) = packet.rejection_reason {
+        info!(
+            "encountered validation packet {} with rejection reason {} in batch {}",
+            packet.uuid, rejection_reason, batch_id
+        );
+        invalid_packets.push(InvalidPacket {
+            batch_uuid: batch_id.clone(),
+            uuid: packet.uuid.clone(),
+            rejection_reason: rejection_reason,
+        });
+
+        return true;
+    }
+
+    return false;
 }
