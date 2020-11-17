@@ -279,8 +279,12 @@ impl<'a> BatchAggregator<'a> {
             for server in servers.iter_mut() {
                 match server.aggregate(
                     &ingestion_packet.encrypted_payload,
-                    &VerificationMessage::try_from(peer_validation_packet)?,
-                    &VerificationMessage::try_from(own_validation_packet)?,
+                    &VerificationMessage::try_from(
+                        peer_validation_packet.polynomial_points.as_ref().unwrap(),
+                    )?,
+                    &VerificationMessage::try_from(
+                        own_validation_packet.polynomial_points.as_ref().unwrap(),
+                    )?,
                 ) {
                     Ok(valid) => {
                         if !valid {

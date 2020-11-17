@@ -1,6 +1,9 @@
 use crate::{
     batch::{Batch, BatchReader, BatchWriter},
-    idl::{IngestionDataSharePacket, IngestionHeader, Packet, ValidationHeader, ValidationPacket},
+    idl::{
+        IngestionDataSharePacket, IngestionHeader, Packet, PolynomialPoints, ValidationHeader,
+        ValidationPacket,
+    },
     transport::{SignableTransport, VerifiableAndDecryptableTransport},
     BatchSigningKey, Error,
 };
@@ -119,9 +122,12 @@ impl<'a> BatchIntaker<'a> {
 
                     let packet = ValidationPacket {
                         uuid: packet.uuid,
-                        f_r: u32::from(validation_message.f_r) as i64,
-                        g_r: u32::from(validation_message.g_r) as i64,
-                        h_r: u32::from(validation_message.h_r) as i64,
+                        polynomial_points: Some(PolynomialPoints {
+                            f_r: u32::from(validation_message.f_r) as i64,
+                            g_r: u32::from(validation_message.g_r) as i64,
+                            h_r: u32::from(validation_message.h_r) as i64,
+                        }),
+                        rejection_reason: None,
                     };
                     packet.write(&mut packet_writer)?;
                     did_create_validation_packet = true;

@@ -11,18 +11,36 @@
         },
         {
             "name": "f_r",
-            "type": "long",
+            "type": ["null", "long"],
             "doc": "The share of the polynomial f evaluated in r_PIT."
         },
         {
             "name": "g_r",
-            "type": "long",
+            "type": ["null", "long"],
             "doc": "The share of the polynomial g evaluated in r_PIT."
         },
         {
             "name": "h_r",
-            "type": "long",
+            "type": ["null", "long"],
             "doc": "The share of the polynomial h evaluated in r_PIT."
+        },
+        {
+            "name": "rejection_reason",
+            "type": [
+                "null",
+                {
+                    "type": "enum",
+                    "name": "rejection_reason",
+                    "symbols": [
+                        "INVALID_PARAMETERS",
+                        "INVALID_CIPHERTEXT",
+                        "INVALID_PACKET",
+                        "MISSING_PEER_VALIDATION",
+                        "INVALID_PROOF"
+                    ]
+                }
+            ],
+            "doc": "If the packet was rejected during intake, contains the rejection reason"
         }
     ]
 }

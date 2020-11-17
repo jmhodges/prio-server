@@ -688,11 +688,17 @@ impl Header for ValidationHeader {
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct ValidationPacket {
-    pub uuid: Uuid,
+pub struct PolynomialPoints {
     pub f_r: i64,
     pub g_r: i64,
     pub h_r: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ValidationPacket {
+    pub uuid: Uuid,
+    pub polynomial_points: Option<PolynomialPoints>,
+    pub rejection_reason: Option<InvalidPacketRejectionReason>,
 }
 
 impl Packet for ValidationPacket {
@@ -701,19 +707,111 @@ impl Packet for ValidationPacket {
     }
 
     fn read<R: Read>(reader: &mut Reader<R>) -> Result<ValidationPacket, Error> {
-        let header = match reader.next() {
-            Some(Ok(h)) => h,
+        let record = match reader.next() {
+            Some(Ok(Value::Record(r))) => r,
+            Some(Ok(_)) => {
+                return Err(Error::MalformedDataPacketError(
+                    "value is not a record".to_owned(),
+                ))
+            }
             Some(Err(e)) => {
                 return Err(Error::AvroError(
-                    "failed to read header from Avro reader".to_owned(),
+                    "failed to read record from Avro reader".to_owned(),
                     e,
-                ))
+                ));
             }
             None => return Err(Error::EofError),
         };
 
-        from_value::<ValidationPacket>(&header)
-            .map_err(|e| Error::AvroError("failed to parse validation header".to_owned(), e))
+        let mut uuid = None;
+        let mut f_r = None;
+        let mut g_r = None;
+        let mut h_r = None;
+        let mut rejection_reason = None;
+
+        for tuple in record {
+            match (tuple.0.as_str(), tuple.1) {
+                ("uuid", Value::Uuid(v)) => uuid = Some(v),
+                ("f_r", Value::Union(boxed)) => match *boxed {
+                    Value::Long(l) => f_r = Some(l),
+                    Value::Null => f_r = None,
+                    v => {
+                        return Err(Error::MalformedDataPacketError(format!(
+                            "unexpected boxed value {:?} in f_r",
+                            v
+                        )))
+                    }
+                },
+                ("g_r", Value::Union(boxed)) => match *boxed {
+                    Value::Long(l) => g_r = Some(l),
+                    Value::Null => g_r = None,
+                    v => {
+                        return Err(Error::MalformedDataPacketError(format!(
+                            "unexpected boxed value {:?} in g_r",
+                            v
+                        )))
+                    }
+                },
+                ("h_r", Value::Union(boxed)) => match *boxed {
+                    Value::Long(l) => h_r = Some(l),
+                    Value::Null => h_r = None,
+                    v => {
+                        return Err(Error::MalformedDataPacketError(format!(
+                            "unexpected boxed value {:?} in h_r",
+                            v
+                        )))
+                    }
+                },
+                ("rejection_reason", Value::Union(boxed)) => match *boxed {
+                    Value::Enum(i, s) => {
+                        rejection_reason = Some(
+                            from_value::<InvalidPacketRejectionReason>(&Value::Enum(i, s))
+                                .map_err(|e| {
+                                    Error::AvroError(
+                                        "failed to parse rejection reason".to_owned(),
+                                        e,
+                                    )
+                                })?,
+                        )
+                    }
+                    Value::Null => rejection_reason = None,
+                    v => {
+                        return Err(Error::MalformedDataPacketError(format!(
+                            "unexpected boxed value {:?} in rejection_reason",
+                            v
+                        )))
+                    }
+                },
+                (f, _) => {
+                    return Err(Error::MalformedDataPacketError(format!(
+                        "unexpected field {} in record",
+                        f
+                    )))
+                }
+            }
+        }
+
+        if uuid.is_none() {
+            return Err(Error::MalformedDataPacketError(
+                "missing fields in record".to_owned(),
+            ));
+        }
+
+        let polynomial_points = match (f_r, g_r, h_r, &rejection_reason) {
+            (Some(f_r), Some(g_r), Some(h_r), None) => Some(PolynomialPoints { f_r, g_r, h_r }),
+            (_, _, _, Some(_)) => None,
+            (_, _, _, _) => {
+                return Err(Error::MalformedDataPacketError(
+                    "either rejection_reason or polynomial_points is required".to_owned(),
+                ))
+            }
+        };
+
+        Ok(ValidationPacket {
+            uuid: uuid.unwrap(),
+            polynomial_points,
+            rejection_reason,
+        })
     }
 
     fn write<W: Write>(&self, writer: &mut Writer<W>) -> Result<(), Error> {
@@ -731,9 +829,24 @@ impl Packet for ValidationPacket {
         };
 
         record.put("uuid", Value::Uuid(self.uuid));
-        record.put("f_r", Value::Long(self.f_r));
-        record.put("g_r", Value::Long(self.g_r));
-        record.put("h_r", Value::Long(self.h_r));
+        if let Some(point) = &self.polynomial_points {
+            record.put("f_r", Value::Union(Box::new(Value::Long(point.f_r))));
+            record.put("g_r", Value::Union(Box::new(Value::Long(point.g_r))));
+            record.put("h_r", Value::Union(Box::new(Value::Long(point.h_r))));
+        } else {
+            record.put("f_r", Value::Union(Box::new(Value::Null)));
+            record.put("g_r", Value::Union(Box::new(Value::Null)));
+            record.put("h_r", Value::Union(Box::new(Value::Null)));
+        }
+
+        if let Some(rejection_reason) = &self.rejection_reason {
+            record.put(
+                "rejection_reason",
+                Value::Union(Box::new(rejection_reason.avro_value())),
+            );
+        } else {
+            record.put("rejection_reason", Value::Union(Box::new(Value::Null)));
+        }
 
         writer.append(record).map_err(|e| {
             Error::AvroError("failed to append record to Avro writer".to_owned(), e)
@@ -743,10 +856,10 @@ impl Packet for ValidationPacket {
     }
 }
 
-impl TryFrom<&ValidationPacket> for VerificationMessage {
+impl TryFrom<&PolynomialPoints> for VerificationMessage {
     type Error = TryFromIntError;
 
-    fn try_from(p: &ValidationPacket) -> Result<Self, Self::Error> {
+    fn try_from(p: &PolynomialPoints) -> Result<Self, Self::Error> {
         Ok(VerificationMessage {
             f_r: Field::from(u32::try_from(p.f_r)?),
             g_r: Field::from(u32::try_from(p.g_r)?),
@@ -1004,23 +1117,13 @@ pub enum InvalidPacketRejectionReason {
 }
 
 impl InvalidPacketRejectionReason {
-    pub fn index(&self) -> i32 {
+    pub fn avro_value(&self) -> Value {
         match self {
-            Self::InvalidParameters => 0,
-            Self::InvalidCiphertext => 1,
-            Self::InvalidPacket => 2,
-            Self::MissingPeerValidation => 3,
-            Self::InvalidProof => 4,
-        }
-    }
-
-    pub fn symbol(&self) -> String {
-        match self {
-            Self::InvalidParameters => "INVALID_PARAMETERS".to_owned(),
-            Self::InvalidCiphertext => "INVALID_CIPHERTEXT".to_owned(),
-            Self::InvalidPacket => "INVALID_PACKET".to_owned(),
-            Self::MissingPeerValidation => "MISSING_PEER_VALIDATION".to_owned(),
-            Self::InvalidProof => "INVALID_PROOF".to_owned(),
+            Self::InvalidParameters => Value::Enum(0, "INVALID_PARAMETERS".to_owned()),
+            Self::InvalidCiphertext => Value::Enum(1, "INVALID_CIPHERTEXT".to_owned()),
+            Self::InvalidPacket => Value::Enum(2, "INVALID_PACKET".to_owned()),
+            Self::MissingPeerValidation => Value::Enum(3, "MISSING_PEER_VALIDATION".to_owned()),
+            Self::InvalidProof => Value::Enum(4, "INVALID_PROOF".to_owned()),
         }
     }
 }
@@ -1067,13 +1170,7 @@ impl Packet for InvalidPacket {
         };
 
         record.put("uuid", Value::Uuid(self.uuid));
-        record.put(
-            "rejection_reason",
-            Value::Enum(
-                self.rejection_reason.index(),
-                self.rejection_reason.symbol(),
-            ),
-        );
+        record.put("rejection_reason", self.rejection_reason.avro_value());
 
         writer.append(record).map_err(|e| {
             Error::AvroError("failed to append record to Avro writer".to_owned(), e)
@@ -1235,21 +1332,26 @@ mod tests {
         let packets = &[
             ValidationPacket {
                 uuid: Uuid::new_v4(),
-                f_r: 1,
-                g_r: 2,
-                h_r: 3,
+                polynomial_points: Some(PolynomialPoints {
+                    f_r: 1,
+                    g_r: 2,
+                    h_r: 3,
+                }),
+                rejection_reason: None,
             },
             ValidationPacket {
                 uuid: Uuid::new_v4(),
-                f_r: 4,
-                g_r: 5,
-                h_r: 6,
+                polynomial_points: Some(PolynomialPoints {
+                    f_r: 4,
+                    g_r: 5,
+                    h_r: 6,
+                }),
+                rejection_reason: None,
             },
             ValidationPacket {
                 uuid: Uuid::new_v4(),
-                f_r: 7,
-                g_r: 8,
-                h_r: 9,
+                polynomial_points: None,
+                rejection_reason: Some(InvalidPacketRejectionReason::InvalidCiphertext),
             },
         ];
 
