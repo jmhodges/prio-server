@@ -1106,13 +1106,21 @@ impl Header for SumPart {
     }
 }
 
+/// Represents the reason a data share packet was rejected. At the end of the
+/// pipeline, the portal server receives an invalid_uuids file that contains
+/// records for each bad packet.
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum InvalidPacketRejectionReason {
+    /// Invalid value of per-packet parameter, such as r_pit
     InvalidParameters,
+    /// Ingestion data share packet could not be decrypted
     InvalidCiphertext,
+    /// Malformed individual packet (bad encoding)
     InvalidPacket,
+    /// Packet could not be validated because of missing peer validation
     MissingPeerValidation,
+    /// Verification of ingestion packet against peer verifications failed
     InvalidProof,
 }
 
@@ -1130,6 +1138,7 @@ impl InvalidPacketRejectionReason {
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct InvalidPacket {
+    pub batch_uuid: Uuid,
     pub uuid: Uuid,
     pub rejection_reason: InvalidPacketRejectionReason,
 }
@@ -1169,6 +1178,7 @@ impl Packet for InvalidPacket {
             }
         };
 
+        record.put("batch_uuid", Value::Uuid(self.batch_uuid));
         record.put("uuid", Value::Uuid(self.uuid));
         record.put("rejection_reason", self.rejection_reason.avro_value());
 
@@ -1424,14 +1434,17 @@ mod tests {
     fn roundtrip_invalid_packet() {
         let packets = &[
             InvalidPacket {
+                batch_uuid: Uuid::new_v4(),
                 uuid: Uuid::new_v4(),
                 rejection_reason: InvalidPacketRejectionReason::InvalidParameters,
             },
             InvalidPacket {
+                batch_uuid: Uuid::new_v4(),
                 uuid: Uuid::new_v4(),
                 rejection_reason: InvalidPacketRejectionReason::InvalidProof,
             },
             InvalidPacket {
+                batch_uuid: Uuid::new_v4(),
                 uuid: Uuid::new_v4(),
                 rejection_reason: InvalidPacketRejectionReason::InvalidCiphertext,
             },

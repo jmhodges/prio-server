@@ -4,6 +4,12 @@
     "name": "PrioInvalidPacket",
     "fields": [
         {
+            "name": "batch_uuid",
+            "type": "string",
+            "logicalType": "uuid",
+            "doc": "UUID of the batch to which the packet that failed validation belongs."
+        },
+        {
             "name": "uuid",
             "type": "string",
             "logicalType": "uuid",

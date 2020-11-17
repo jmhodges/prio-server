@@ -1,13 +1,13 @@
 use crate::{
     batch::{Batch, BatchReader, BatchWriter},
     idl::{
-        IngestionDataSharePacket, IngestionHeader, Packet, PolynomialPoints, ValidationHeader,
-        ValidationPacket,
+        IngestionDataSharePacket, IngestionHeader, InvalidPacketRejectionReason, Packet,
+        PolynomialPoints, ValidationHeader, ValidationPacket,
     },
     transport::{SignableTransport, VerifiableAndDecryptableTransport},
     BatchSigningKey, Error,
 };
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{ensure, Result};
 use chrono::NaiveDateTime;
 use log::info;
 use prio::{encrypt::PrivateKey, finite_field::Field, server::Server};
@@ -19,6 +19,7 @@ use uuid::Uuid;
 /// sent by the ingestion server and emitting validation shares to the other
 /// share processor.
 pub struct BatchIntaker<'a> {
+    batch_path: String,
     intake_batch: BatchReader<'a, IngestionHeader, IngestionDataSharePacket>,
     intake_public_keys: &'a HashMap<String, UnparsedPublicKey<Vec<u8>>>,
     packet_decryption_keys: &'a Vec<PrivateKey>,
@@ -40,6 +41,7 @@ impl<'a> BatchIntaker<'a> {
         is_first: bool,
     ) -> Result<BatchIntaker<'a>> {
         Ok(BatchIntaker {
+            batch_path: format!("{}/{}/{}", aggregation_name, batch_id, date),
             intake_batch: BatchReader::new(
                 Batch::new_ingestion(aggregation_name, batch_id, date),
                 &mut *ingestion_transport.transport.transport,
@@ -92,6 +94,7 @@ impl<'a> BatchIntaker<'a> {
         // each, and write them to the validation batch.
         let mut ingestion_packet_reader =
             self.intake_batch.packet_file_reader(&ingestion_header)?;
+        let batch_id = &self.batch_path;
 
         let packet_file_digest = self.peer_validation_batch.multi_packet_file_writer(
             vec![&mut self.own_validation_batch],
@@ -99,17 +102,40 @@ impl<'a> BatchIntaker<'a> {
                 let packet = match IngestionDataSharePacket::read(&mut ingestion_packet_reader) {
                     Ok(p) => p,
                     Err(Error::EofError) => return Ok(()),
+                    // Record that the individual packet was invalid but attempt
+                    // to use the remainder of the batch
+                    Err(Error::MalformedDataPacketError(s)) => {
+                        info!("encountered malformed packet in batch {}: {}", batch_id, s);
+                        ValidationPacket {
+                            // We can't know what the UUID of the bad packet was, so
+                            // insert the nil UUID
+                            uuid: Uuid::nil(),
+                            polynomial_points: None,
+                            rejection_reason: Some(InvalidPacketRejectionReason::InvalidPacket),
+                        }
+                        .write(&mut packet_writer)?;
+                        continue;
+                    }
                     Err(e) => return Err(e.into()),
                 };
 
-                let r_pit = u32::try_from(packet.r_pit)
-                    .with_context(|| format!("illegal r_pit value {}", packet.r_pit))?;
+                let r_pit = match u32::try_from(packet.r_pit) {
+                    Ok(r_pit) => r_pit,
+                    Err(e) => {
+                        info!(
+                            "illegal r_pit value {} in packet {} in batch {} ({:?}",
+                            packet.r_pit, packet.uuid, batch_id, e,
+                        );
+                        ValidationPacket {
+                            uuid: packet.uuid,
+                            polynomial_points: None,
+                            rejection_reason: Some(InvalidPacketRejectionReason::InvalidParameters),
+                        }
+                        .write(&mut packet_writer)?;
+                        continue;
+                    }
+                };
 
-                // TODO(timg): if this fails for a non-empty subset of the
-                // ingestion packets, do we abort handling of the entire
-                // batch (as implemented currently) or should we record it
-                // as an invalid UUID and emit a validation batch for the
-                // other packets?
                 let mut did_create_validation_packet = false;
                 for server in servers.iter_mut() {
                     let validation_message = match server.generate_verification_message(
@@ -134,7 +160,16 @@ impl<'a> BatchIntaker<'a> {
                     break;
                 }
                 if !did_create_validation_packet {
-                    return Err(anyhow!("failed to construct validation message"));
+                    info!(
+                        "encountered undecryptable packet {} in batch {}",
+                        packet.uuid, batch_id
+                    );
+                    ValidationPacket {
+                        uuid: packet.uuid,
+                        polynomial_points: None,
+                        rejection_reason: Some(InvalidPacketRejectionReason::InvalidCiphertext),
+                    }
+                    .write(&mut packet_writer)?;
                 }
             },
         )?;

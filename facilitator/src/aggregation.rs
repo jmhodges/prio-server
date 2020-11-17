@@ -9,7 +9,11 @@ use crate::{
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::NaiveDateTime;
-use prio::server::{Server, VerificationMessage};
+use log::info;
+use prio::{
+    encrypt::EncryptError,
+    server::{Server, VerificationMessage},
+};
 use std::convert::TryFrom;
 use uuid::Uuid;
 
@@ -65,7 +69,7 @@ impl<'a> BatchAggregator<'a> {
     /// Compute the sum part for all the provided batch IDs and write it out to
     /// the aggregation transport.
     pub fn generate_sum_part(&mut self, batch_ids: &[(Uuid, NaiveDateTime)]) -> Result<()> {
-        let mut invalid_uuids = Vec::new();
+        let mut invalid_packets = Vec::new();
 
         let ingestion_header = self.ingestion_header(&batch_ids[0].0, &batch_ids[0].1)?;
 
@@ -82,7 +86,7 @@ impl<'a> BatchAggregator<'a> {
             .collect::<Vec<Server>>();
 
         for batch_id in batch_ids {
-            self.aggregate_share(&batch_id.0, &batch_id.1, &mut servers, &mut invalid_uuids)?;
+            self.aggregate_share(&batch_id.0, &batch_id.1, &mut servers, &mut invalid_packets)?;
         }
 
         // TODO(timg) what exactly do we write out when there are no invalid
@@ -90,12 +94,8 @@ impl<'a> BatchAggregator<'a> {
         let invalid_packets_digest =
             self.aggregation_batch
                 .packet_file_writer(|mut packet_file_writer| {
-                    for invalid_uuid in invalid_uuids {
-                        InvalidPacket {
-                            uuid: invalid_uuid,
-                            rejection_reason: InvalidPacketRejectionReason::InvalidParameters,
-                        }
-                        .write(&mut packet_file_writer)?
+                    for invalid_packet in invalid_packets {
+                        invalid_packet.write(&mut packet_file_writer)?;
                     }
                     Ok(())
                 })?;
@@ -168,7 +168,7 @@ impl<'a> BatchAggregator<'a> {
         batch_id: &Uuid,
         batch_date: &NaiveDateTime,
         servers: &mut Vec<Server>,
-        invalid_uuids: &mut Vec<Uuid>,
+        invalid_uuids: &mut Vec<InvalidPacket>,
     ) -> Result<()> {
         let mut ingestion_batch: BatchReader<'_, IngestionHeader, IngestionDataSharePacket> =
             BatchReader::new(
@@ -275,7 +275,7 @@ impl<'a> BatchAggregator<'a> {
             }
 
             let mut did_aggregate_shares = false;
-            let mut last_err = None;
+            let mut last_err: Option<Result<bool, EncryptError>> = None;
             for server in servers.iter_mut() {
                 match server.aggregate(
                     &ingestion_packet.encrypted_payload,
@@ -288,7 +288,15 @@ impl<'a> BatchAggregator<'a> {
                 ) {
                     Ok(valid) => {
                         if !valid {
-                            invalid_uuids.push(peer_validation_packet.uuid);
+                            info!(
+                                "proof validation failed for packet {} in batch {}",
+                                peer_validation_packet.uuid, batch_id
+                            );
+                            invalid_uuids.push(InvalidPacket {
+                                batch_uuid: batch_id.clone(),
+                                uuid: peer_validation_packet.uuid,
+                                rejection_reason: InvalidPacketRejectionReason::InvalidProof,
+                            });
                         }
                         self.total_individual_clients += 1;
                         did_aggregate_shares = true;
@@ -301,12 +309,22 @@ impl<'a> BatchAggregator<'a> {
                 }
             }
             if !did_aggregate_shares {
-                return last_err
-                    // Unwrap the optional, providing an error if it is None
-                    .context("unknown validation error")?
-                    // Wrap either the default error or what we got from
-                    // server.aggregate
-                    .context("failed to validate packets");
+                info!(
+                    "validation failed for packet {} in batch {}: {:?}",
+                    peer_validation_packet.uuid,
+                    batch_id,
+                    last_err
+                        // Unwrap the optional, providing an error if it is None
+                        .context("unknown validation error")?
+                        // Wrap either the default error or what we got from
+                        // server.aggregate
+                        .context("failed to validate packets")
+                );
+                invalid_uuids.push(InvalidPacket {
+                    batch_uuid: batch_id.clone(),
+                    uuid: peer_validation_packet.uuid,
+                    rejection_reason: InvalidPacketRejectionReason::InvalidCiphertext,
+                });
             }
         }
 
