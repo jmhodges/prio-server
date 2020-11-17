@@ -1110,7 +1110,7 @@ impl Header for SumPart {
 /// Represents the reason a data share packet was rejected. At the end of the
 /// pipeline, the portal server receives an invalid_uuids file that contains
 /// records for each bad packet.
-#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum InvalidPacketRejectionReason {
     /// Invalid value of per-packet parameter, such as r_pit

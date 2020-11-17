@@ -2,7 +2,7 @@ use crate::{
     batch::{Batch, BatchReader, BatchWriter},
     idl::{
         IngestionDataSharePacket, IngestionHeader, InvalidPacket, InvalidPacketRejectionReason,
-        Packet, PolynomialPoints, SumPart, ValidationHeader, ValidationPacket,
+        Packet, SumPart, ValidationHeader, ValidationPacket,
     },
     transport::{SignableTransport, VerifiableAndDecryptableTransport, VerifiableTransport},
     BatchSigningKey, Error,
@@ -218,15 +218,7 @@ impl<'a> BatchAggregator<'a> {
                     Ok(p) => Some(p),
                     Err(Error::EofError) => None,
                     Err(Error::MalformedDataPacketError(s)) => {
-                        info!(
-                            "encountered malformed peer validation packet in batch {}: {}",
-                            batch_id, s
-                        );
-                        invalid_packets.push(InvalidPacket {
-                            batch_uuid: batch_id.clone(),
-                            uuid: Uuid::nil(),
-                            rejection_reason: InvalidPacketRejectionReason::InvalidPacket,
-                        });
+                        push_invalid_packet("peer validation", batch_id, s, invalid_packets);
                         continue;
                     }
                     Err(e) => return Err(e.into()),
@@ -236,15 +228,7 @@ impl<'a> BatchAggregator<'a> {
                     Ok(p) => Some(p),
                     Err(Error::EofError) => None,
                     Err(Error::MalformedDataPacketError(s)) => {
-                        info!(
-                            "encountered malformed own validation packet in batch {}: {}",
-                            batch_id, s
-                        );
-                        invalid_packets.push(InvalidPacket {
-                            batch_uuid: batch_id.clone(),
-                            uuid: Uuid::nil(),
-                            rejection_reason: InvalidPacketRejectionReason::InvalidPacket,
-                        });
+                        push_invalid_packet("own validation", batch_id, s, invalid_packets);
                         continue;
                     }
                     Err(e) => return Err(e.into()),
@@ -254,15 +238,7 @@ impl<'a> BatchAggregator<'a> {
                     Ok(p) => Some(p),
                     Err(Error::EofError) => None,
                     Err(Error::MalformedDataPacketError(s)) => {
-                        info!(
-                            "encountered malformed ingestion packet in batch {}: {}",
-                            batch_id, s
-                        );
-                        invalid_packets.push(InvalidPacket {
-                            batch_uuid: batch_id.clone(),
-                            uuid: Uuid::nil(),
-                            rejection_reason: InvalidPacketRejectionReason::InvalidPacket,
-                        });
+                        push_invalid_packet("ingestion", batch_id, s, invalid_packets);
                         continue;
                     }
                     Err(e) => return Err(e.into()),
@@ -284,10 +260,6 @@ impl<'a> BatchAggregator<'a> {
                     ));
                 }
             };
-
-            // case where either validation packet is a reject
-
-            // case where UUIDs don't line up
 
             // TODO(timg) we need to make sure we are evaluating a valid triple
             // of (peer validation, own validation, ingestion), i.e., they must
@@ -312,7 +284,8 @@ impl<'a> BatchAggregator<'a> {
                     ingestion_packet.uuid));
             }
 
-            // If either validation packet is a reject,
+            // If either validation packet is a reject, record a corresponding
+            // InvalidPacket and move on
             if check_rejection_reason(peer_validation_packet, batch_id, invalid_packets)
                 || check_rejection_reason(own_validation_packet, batch_id, invalid_packets)
             {
@@ -337,7 +310,7 @@ impl<'a> BatchAggregator<'a> {
                                 "proof validation failed for packet {} in batch {}",
                                 peer_validation_packet.uuid, batch_id
                             );
-                            invalid_uuids.push(InvalidPacket {
+                            invalid_packets.push(InvalidPacket {
                                 batch_uuid: batch_id.clone(),
                                 uuid: peer_validation_packet.uuid,
                                 rejection_reason: InvalidPacketRejectionReason::InvalidProof,
@@ -365,7 +338,7 @@ impl<'a> BatchAggregator<'a> {
                         // server.aggregate
                         .context("failed to validate packets")
                 );
-                invalid_uuids.push(InvalidPacket {
+                invalid_packets.push(InvalidPacket {
                     batch_uuid: batch_id.clone(),
                     uuid: peer_validation_packet.uuid,
                     rejection_reason: InvalidPacketRejectionReason::InvalidCiphertext,
@@ -384,8 +357,8 @@ fn check_rejection_reason(
     packet: &ValidationPacket,
     batch_id: &Uuid,
     invalid_packets: &mut Vec<InvalidPacket>,
-) -> PolynomialPoints {
-    if let Some(rejection_reason) = packet.rejection_reason {
+) -> bool {
+    if let Some(rejection_reason) = &packet.rejection_reason {
         info!(
             "encountered validation packet {} with rejection reason {} in batch {}",
             packet.uuid, rejection_reason, batch_id
@@ -393,11 +366,30 @@ fn check_rejection_reason(
         invalid_packets.push(InvalidPacket {
             batch_uuid: batch_id.clone(),
             uuid: packet.uuid.clone(),
-            rejection_reason: rejection_reason,
+            rejection_reason: (*rejection_reason).clone(),
         });
 
         return true;
     }
 
     return false;
+}
+
+/// Push an invalid packet into the provided vector, logging the provided
+/// information.
+fn push_invalid_packet(
+    kind: &str,
+    batch_id: &Uuid,
+    error: String,
+    invalid_packets: &mut Vec<InvalidPacket>,
+) {
+    info!(
+        "encountered malformed {} packet in batch {}: {}",
+        kind, batch_id, error
+    );
+    invalid_packets.push(InvalidPacket {
+        batch_uuid: batch_id.clone(),
+        uuid: Uuid::nil(),
+        rejection_reason: InvalidPacketRejectionReason::InvalidPacket,
+    });
 }
