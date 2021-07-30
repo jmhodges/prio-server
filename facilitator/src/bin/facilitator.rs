@@ -928,28 +928,51 @@ fn main() -> Result<(), anyhow::Error> {
     );
     let runtime = runtime::Builder::new_multi_thread().enable_all().build()?;
 
+    let mut aws_provider_factory = aws_credentials::ProviderFactory::default();
+
     let result = match matches.subcommand() {
         // The configuration of the Args above should guarantee that the
         // various parameters are present and valid, so it is safe to use
         // unwrap() here.
-        ("generate-ingestion-sample", Some(sub_matches)) => {
-            generate_sample(&Uuid::new_v4(), sub_matches, runtime.handle(), &root_logger)
-        }
-        ("generate-ingestion-sample-worker", Some(sub_matches)) => {
-            generate_sample_worker(sub_matches, runtime.handle(), &root_logger)
-        }
-        ("intake-batch", Some(sub_matches)) => {
-            intake_batch_subcommand(&Uuid::new_v4(), sub_matches, runtime.handle(), &root_logger)
-        }
-        ("intake-batch-worker", Some(sub_matches)) => {
-            intake_batch_worker(sub_matches, runtime.handle(), &root_logger)
-        }
-        ("aggregate", Some(sub_matches)) => {
-            aggregate_subcommand(&Uuid::new_v4(), sub_matches, runtime.handle(), &root_logger)
-        }
-        ("aggregate-worker", Some(sub_matches)) => {
-            aggregate_worker(sub_matches, runtime.handle(), &root_logger)
-        }
+        ("generate-ingestion-sample", Some(sub_matches)) => generate_sample(
+            &Uuid::new_v4(),
+            sub_matches,
+            runtime.handle(),
+            &mut aws_provider_factory,
+            &root_logger,
+        ),
+        ("generate-ingestion-sample-worker", Some(sub_matches)) => generate_sample_worker(
+            sub_matches,
+            runtime.handle(),
+            &mut aws_provider_factory,
+            &root_logger,
+        ),
+        ("intake-batch", Some(sub_matches)) => intake_batch_subcommand(
+            &Uuid::new_v4(),
+            sub_matches,
+            runtime.handle(),
+            &mut aws_provider_factory,
+            &root_logger,
+        ),
+        ("intake-batch-worker", Some(sub_matches)) => intake_batch_worker(
+            sub_matches,
+            runtime.handle(),
+            &mut aws_provider_factory,
+            &root_logger,
+        ),
+        ("aggregate", Some(sub_matches)) => aggregate_subcommand(
+            &Uuid::new_v4(),
+            sub_matches,
+            runtime.handle(),
+            &mut aws_provider_factory,
+            &root_logger,
+        ),
+        ("aggregate-worker", Some(sub_matches)) => aggregate_worker(
+            sub_matches,
+            runtime.handle(),
+            &mut aws_provider_factory,
+            &root_logger,
+        ),
         ("lint-manifest", Some(sub_matches)) => lint_manifest(sub_matches, &root_logger),
         (_, _) => Ok(()),
     };
@@ -1005,13 +1028,20 @@ fn crypto_self_check(matches: &ArgMatches, logger: &Logger) -> Result<()> {
 fn generate_sample_worker(
     sub_matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     root_logger: &Logger,
 ) -> Result<(), anyhow::Error> {
     let interval = value_t!(sub_matches.value_of("generation-interval"), u64)?;
 
     loop {
         let trace_id = Uuid::new_v4();
-        let result = generate_sample(&trace_id, sub_matches, runtime_handle, root_logger);
+        let result = generate_sample(
+            &trace_id,
+            sub_matches,
+            runtime_handle,
+            aws_provider_factory,
+            root_logger,
+        );
 
         if let Err(e) = result {
             error!(
@@ -1175,6 +1205,7 @@ fn generate_sample(
     trace_id: &Uuid,
     sub_matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     logger: &Logger,
 ) -> Result<(), anyhow::Error> {
     let kube_namespace = sub_matches.value_of("kube-namespace");
@@ -1215,6 +1246,7 @@ fn generate_sample(
                 Entity::Peer,
                 sub_matches,
                 runtime_handle,
+                aws_provider_factory,
                 logger,
             )?,
             batch_signing_key: own_batch_signing_key,
@@ -1256,6 +1288,7 @@ fn generate_sample(
                 Entity::Facilitator,
                 sub_matches,
                 runtime_handle,
+                aws_provider_factory,
                 logger,
             )?,
             batch_signing_key: own_batch_signing_key,
@@ -1295,6 +1328,7 @@ fn intake_batch<F>(
     date: &str,
     sub_matches: &ArgMatches,
     metrics_collector: Option<&IntakeMetricsCollector>,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     parent_logger: &Logger,
     runtime_handle: &Handle,
     callback: F,
@@ -1302,8 +1336,12 @@ fn intake_batch<F>(
 where
     F: FnMut(&Logger),
 {
-    let mut intake_transport =
-        intake_transport_from_args(sub_matches, runtime_handle, parent_logger)?;
+    let mut intake_transport = intake_transport_from_args(
+        sub_matches,
+        runtime_handle,
+        aws_provider_factory,
+        parent_logger,
+    )?;
 
     // We need the bucket to which we will write validations for the
     // peer data share processor, which can either be fetched from the
@@ -1341,6 +1379,7 @@ where
             PathOrInOut::Path(peer_validation_bucket),
             sub_matches,
             runtime_handle,
+            aws_provider_factory,
             parent_logger,
         )?,
         batch_signing_key: batch_signing_key_from_arg(sub_matches)?,
@@ -1393,6 +1432,7 @@ fn intake_batch_subcommand(
     trace_id: &Uuid,
     sub_matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     parent_logger: &Logger,
 ) -> Result<(), anyhow::Error> {
     crypto_self_check(sub_matches, parent_logger).context("crypto self check failed")?;
@@ -1403,6 +1443,7 @@ fn intake_batch_subcommand(
         sub_matches.value_of("date").unwrap(),
         sub_matches,
         None,
+        aws_provider_factory,
         parent_logger,
         runtime_handle,
         |_| {}, // no-op callback
@@ -1412,12 +1453,18 @@ fn intake_batch_subcommand(
 fn intake_batch_worker(
     sub_matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     parent_logger: &Logger,
 ) -> Result<(), anyhow::Error> {
     let metrics_collector = IntakeMetricsCollector::new()?;
     let scrape_port = value_t!(sub_matches.value_of("metrics-scrape-port"), u16)?;
     start_metrics_scrape_endpoint(scrape_port, runtime_handle, parent_logger)?;
-    let queue = intake_task_queue_from_args(sub_matches, runtime_handle, parent_logger)?;
+    let queue = intake_task_queue_from_args(
+        sub_matches,
+        runtime_handle,
+        aws_provider_factory,
+        parent_logger,
+    )?;
 
     crypto_self_check(sub_matches, parent_logger).context("crypto self check failed")?;
 
@@ -1437,6 +1484,7 @@ fn intake_batch_worker(
                 &task_handle.task.date,
                 sub_matches,
                 Some(&metrics_collector),
+                aws_provider_factory,
                 parent_logger,
                 runtime_handle,
                 |logger| {
@@ -1479,6 +1527,7 @@ fn aggregate<F>(
     sub_matches: &ArgMatches,
     metrics_collector: Option<&AggregateMetricsCollector>,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     logger: &Logger,
     callback: F,
 ) -> Result<()>
@@ -1488,7 +1537,8 @@ where
     let instance_name = sub_matches.value_of("instance-name").unwrap();
     let is_first = is_first_from_arg(sub_matches);
 
-    let mut intake_transport = intake_transport_from_args(sub_matches, runtime_handle, logger)?;
+    let mut intake_transport =
+        intake_transport_from_args(sub_matches, runtime_handle, aws_provider_factory, logger)?;
 
     // We created the bucket that peers wrote validations into, and so
     // it is simply provided via argument.
@@ -1501,6 +1551,7 @@ where
         PathOrInOut::InOut(InOut::Input),
         sub_matches,
         runtime_handle,
+        aws_provider_factory,
         logger,
     )?;
 
@@ -1557,6 +1608,7 @@ where
         PathOrInOut::Path(portal_bucket),
         sub_matches,
         runtime_handle,
+        aws_provider_factory,
         logger,
     )?;
 
@@ -1625,6 +1677,7 @@ fn aggregate_subcommand(
     trace_id: &Uuid,
     sub_matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     parent_logger: &Logger,
 ) -> Result<(), anyhow::Error> {
     crypto_self_check(sub_matches, parent_logger).context("crypto self check failed")?;
@@ -1654,6 +1707,7 @@ fn aggregate_subcommand(
         sub_matches,
         None,
         runtime_handle,
+        aws_provider_factory,
         parent_logger,
         |_| {}, // no-op callback
     )
@@ -1662,9 +1716,15 @@ fn aggregate_subcommand(
 fn aggregate_worker(
     sub_matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     parent_logger: &Logger,
 ) -> Result<(), anyhow::Error> {
-    let queue = aggregation_task_queue_from_args(sub_matches, runtime_handle, parent_logger)?;
+    let queue = aggregation_task_queue_from_args(
+        sub_matches,
+        runtime_handle,
+        aws_provider_factory,
+        parent_logger,
+    )?;
     let metrics_collector = AggregateMetricsCollector::new()?;
     let scrape_port = value_t!(sub_matches.value_of("metrics-scrape-port"), u16)?;
     start_metrics_scrape_endpoint(scrape_port, runtime_handle, parent_logger)?;
@@ -1696,6 +1756,7 @@ fn aggregate_worker(
                 sub_matches,
                 Some(&metrics_collector),
                 runtime_handle,
+                aws_provider_factory,
                 parent_logger,
                 |logger| {
                     if let Err(e) =
@@ -1847,6 +1908,7 @@ fn batch_signing_key_from_arg(matches: &ArgMatches) -> Result<BatchSigningKey> {
 fn intake_transport_from_args(
     matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     logger: &Logger,
 ) -> Result<VerifiableAndDecryptableTransport> {
     let identity = value_t!(
@@ -1863,6 +1925,7 @@ fn intake_transport_from_args(
         PathOrInOut::InOut(InOut::Input),
         matches,
         runtime_handle,
+        aws_provider_factory,
         logger,
     )?;
 
@@ -1930,6 +1993,7 @@ fn transport_from_args(
     path_or_in_out: PathOrInOut,
     matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     logger: &Logger,
 ) -> Result<Box<dyn Transport>> {
     let path = match path_or_in_out {
@@ -1944,7 +2008,15 @@ fn transport_from_args(
         }
     };
 
-    transport_for_path(path, identity, entity, matches, runtime_handle, logger)
+    transport_for_path(
+        path,
+        identity,
+        entity,
+        matches,
+        runtime_handle,
+        aws_provider_factory,
+        logger,
+    )
 }
 
 fn transport_for_path(
@@ -1953,6 +2025,7 @@ fn transport_for_path(
     entity: Entity,
     matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     logger: &Logger,
 ) -> Result<Box<dyn Transport>> {
     let use_default_aws_credentials_provider = value_t!(
@@ -1967,7 +2040,7 @@ fn transport_for_path(
 
     match path {
         StoragePath::S3Path(path) => {
-            let credentials_provider = aws_credentials::Provider::new(
+            let credentials_provider = aws_provider_factory.get(
                 identity,
                 sa_to_impersonate,
                 use_default_aws_credentials_provider,
@@ -1998,6 +2071,7 @@ fn transport_for_path(
                     matches.value_of("gcp-workload-identity-pool-provider"),
                     use_default_aws_credentials_provider,
                     runtime_handle,
+                    aws_provider_factory,
                     logger,
                 )?,
                 runtime_handle,
@@ -2028,6 +2102,7 @@ fn decode_base64_key(s: &str) -> Result<Vec<u8>> {
 fn intake_task_queue_from_args(
     matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     logger: &Logger,
 ) -> Result<Box<dyn TaskQueue<IntakeBatchTask>>> {
     let task_queue_kind = TaskQueueKind::from_str(
@@ -2059,7 +2134,7 @@ fn intake_task_queue_from_args(
             let sqs_region = matches
                 .value_of("aws-sqs-region")
                 .ok_or_else(|| anyhow!("aws-sqs-region is required"))?;
-            let credentials_provider = aws_credentials::Provider::new(
+            let credentials_provider = aws_provider_factory.get(
                 identity,
                 Identity::none(),
                 value_t!(
@@ -2084,6 +2159,7 @@ fn intake_task_queue_from_args(
 fn aggregation_task_queue_from_args(
     matches: &ArgMatches,
     runtime_handle: &Handle,
+    aws_provider_factory: &mut aws_credentials::ProviderFactory,
     logger: &Logger,
 ) -> Result<Box<dyn TaskQueue<AggregationTask>>> {
     let task_queue_kind = TaskQueueKind::from_str(
@@ -2115,7 +2191,7 @@ fn aggregation_task_queue_from_args(
             let sqs_region = matches
                 .value_of("aws-sqs-region")
                 .ok_or_else(|| anyhow!("aws-sqs-region is required"))?;
-            let credentials_provider = aws_credentials::Provider::new(
+            let credentials_provider = aws_provider_factory.get(
                 identity,
                 Identity::none(),
                 value_t!(

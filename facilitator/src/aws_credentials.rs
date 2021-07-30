@@ -26,12 +26,13 @@ use rusoto_core::{
 use rusoto_mock::MockCredentialsProvider;
 use rusoto_sts::WebIdentityProvider;
 use sha2::{Digest, Sha256};
-use slog::{o, Logger};
+use slog::{debug, o, Logger};
 use std::str;
 #[cfg(test)]
 use std::sync::Arc;
 use std::{
     boxed::Box,
+    collections::HashMap,
     convert::From,
     default::Default,
     fmt::{self, Debug, Display},
@@ -46,6 +47,57 @@ const HOST_HEADER: &str = "host";
 const AMAZON_DATE_HEADER: &str = "x-amz-date";
 const AMAZON_SECURITY_TOKEN_HEADER: &str = "x-amz-security-token";
 const GOOGLE_TARGET_RESOURCE_HEADER: &str = "x-goog-cloud-target-resource";
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ProviderFactoryKey {
+    aws_identity: Identity,
+    impersonate_gcp_service_account: Identity,
+    use_default_provider: bool,
+    purpose: &'static str,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProviderFactory {
+    providers: HashMap<ProviderFactoryKey, Provider>,
+}
+
+impl ProviderFactory {
+    pub fn get(
+        &mut self,
+        aws_identity: Identity,
+        impersonate_gcp_service_account: Identity,
+        use_default_provider: bool,
+        purpose: &'static str,
+        runtime_handle: &Handle,
+        logger: &Logger,
+    ) -> Result<Provider> {
+        let key = ProviderFactoryKey {
+            aws_identity: aws_identity.clone(),
+            impersonate_gcp_service_account: impersonate_gcp_service_account.clone(),
+            use_default_provider,
+            purpose,
+        };
+        match self.providers.get(&key) {
+            Some(provider) => {
+                debug!(logger, "reusing cached AWS credentials provider {:?}", key);
+                Ok(provider.clone())
+            }
+            None => {
+                debug!(logger, "creating new AWS credentials provider {:?}", key);
+                let provider = Provider::new(
+                    aws_identity,
+                    impersonate_gcp_service_account,
+                    use_default_provider,
+                    purpose,
+                    runtime_handle,
+                    logger,
+                )?;
+                self.providers.insert(key, provider.clone());
+                Ok(provider)
+            }
+        }
+    }
+}
 
 /// The Provider enum allows us to generically handle different scenarios for
 /// authenticating to AWS APIs, while still having a concrete value that
@@ -102,11 +154,11 @@ impl Provider {
     /// If `use_default_provider` is true, then ambient AWS credentials from the
     /// environment or ~/.aws/credentials will be used and other arguments are
     /// ignored.
-    pub fn new(
+    fn new(
         aws_identity: Identity,
         impersonate_gcp_service_account: Identity,
         use_default_provider: bool,
-        purpose: &str,
+        purpose: &'static str,
         runtime_handle: &Handle,
         logger: &Logger,
     ) -> Result<Self> {
@@ -114,7 +166,7 @@ impl Provider {
             (true, _) => Self::new_default(),
             (_, Some(identity)) => Self::new_web_identity_with_oidc(
                 identity,
-                purpose.to_owned(),
+                purpose,
                 impersonate_gcp_service_account,
                 runtime_handle,
                 logger,
@@ -145,7 +197,7 @@ impl Provider {
 
     fn new_web_identity_with_oidc(
         iam_role: &str,
-        purpose: String,
+        purpose: &'static str,
         impersonated_gcp_service_account: Identity,
         runtime_handle: &Handle,
         logger: &Logger,
@@ -158,7 +210,7 @@ impl Provider {
         // (which they do every hour).
         let token_logger = logger.new(o!(
             "iam_role" => iam_role.to_owned(),
-            "purpose" => purpose.clone(),
+            "purpose" => purpose,
         ));
         let token_provider: Box<dyn ProvideGcpIdentityToken> =
             match impersonated_gcp_service_account.as_str() {
