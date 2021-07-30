@@ -1,7 +1,7 @@
 use crate::{
     config::Identity,
     gcp_oauth::{
-        AccessScope, GcpAccessTokenProvider, GkeMetadataServiceIdentityTokenProvider,
+        AccessScope, GcpAccessTokenProviderFactory, GkeMetadataServiceIdentityTokenProvider,
         ImpersonatedServiceAccountIdentityTokenProvider, ProvideGcpIdentityToken,
     },
     retries,
@@ -73,6 +73,7 @@ impl ProviderFactory {
         impersonate_gcp_service_account: Identity,
         use_default_provider: bool,
         purpose: &'static str,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         logger: &Logger,
     ) -> Result<Provider> {
         let key = ProviderFactoryKey {
@@ -93,6 +94,7 @@ impl ProviderFactory {
                     impersonate_gcp_service_account,
                     use_default_provider,
                     purpose,
+                    gcp_access_token_provider_cache,
                     logger,
                 )?;
                 self.providers.insert(key, provider.clone());
@@ -162,6 +164,7 @@ impl Provider {
         impersonate_gcp_service_account: Identity,
         use_default_provider: bool,
         purpose: &'static str,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         logger: &Logger,
     ) -> Result<Self> {
         match (use_default_provider, aws_identity.as_str()) {
@@ -170,6 +173,7 @@ impl Provider {
                 identity,
                 purpose.to_owned(),
                 impersonate_gcp_service_account,
+                gcp_access_token_provider_cache,
                 logger,
             ),
             (_, None) => Self::new_web_identity_from_kubernetes_environment(),
@@ -200,6 +204,7 @@ impl Provider {
         iam_role: &str,
         purpose: String,
         impersonated_gcp_service_account: Identity,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         logger: &Logger,
     ) -> Result<Self> {
         // When running in GKE, we obtain an identity token which we can then
@@ -217,7 +222,7 @@ impl Provider {
                 Some(impersonated_gcp_service_account) => {
                     Box::new(ImpersonatedServiceAccountIdentityTokenProvider::new(
                         impersonated_gcp_service_account.to_owned(),
-                        GcpAccessTokenProvider::new(
+                        gcp_access_token_provider_cache.get(
                             AccessScope::CloudPlatform,
                             Identity::none(),
                             None,
