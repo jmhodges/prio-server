@@ -1,7 +1,7 @@
 use crate::{
     config::Identity,
     gcp_oauth::{
-        AccessScope, GcpAccessTokenProvider, GkeMetadataServiceIdentityTokenProvider,
+        AccessScope, GcpAccessTokenProviderFactory, GkeMetadataServiceIdentityTokenProvider,
         ImpersonatedServiceAccountIdentityTokenProvider, ProvideGcpIdentityToken,
     },
     retries,
@@ -56,19 +56,27 @@ struct ProviderFactoryKey {
     purpose: &'static str,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ProviderFactory {
+#[derive(Clone, Debug)]
+pub struct ProviderFactory<'a> {
     providers: HashMap<ProviderFactoryKey, Provider>,
+    runtime_handle: &'a Handle,
 }
 
-impl ProviderFactory {
+impl<'a> ProviderFactory<'a> {
+    pub fn new(runtime_handle: &'a Handle) -> Self {
+        Self {
+            runtime_handle,
+            providers: HashMap::new(),
+        }
+    }
+
     pub fn get(
         &mut self,
         aws_identity: Identity,
         impersonate_gcp_service_account: Identity,
         use_default_provider: bool,
         purpose: &'static str,
-        runtime_handle: &Handle,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         logger: &Logger,
     ) -> Result<Provider> {
         let key = ProviderFactoryKey {
@@ -89,7 +97,8 @@ impl ProviderFactory {
                     impersonate_gcp_service_account,
                     use_default_provider,
                     purpose,
-                    runtime_handle,
+                    self.runtime_handle,
+                    gcp_access_token_provider_cache,
                     logger,
                 )?;
                 self.providers.insert(key, provider.clone());
@@ -160,6 +169,7 @@ impl Provider {
         use_default_provider: bool,
         purpose: &'static str,
         runtime_handle: &Handle,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         logger: &Logger,
     ) -> Result<Self> {
         match (use_default_provider, aws_identity.as_str()) {
@@ -169,6 +179,7 @@ impl Provider {
                 purpose,
                 impersonate_gcp_service_account,
                 runtime_handle,
+                gcp_access_token_provider_cache,
                 logger,
             ),
             (_, None) => Self::new_web_identity_from_kubernetes_environment(),
@@ -200,6 +211,7 @@ impl Provider {
         purpose: &'static str,
         impersonated_gcp_service_account: Identity,
         runtime_handle: &Handle,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         logger: &Logger,
     ) -> Result<Self> {
         // When running in GKE, we obtain an identity token which we can then
@@ -217,7 +229,7 @@ impl Provider {
                 Some(impersonated_gcp_service_account) => {
                     Box::new(ImpersonatedServiceAccountIdentityTokenProvider::new(
                         impersonated_gcp_service_account.to_owned(),
-                        GcpAccessTokenProvider::new(
+                        gcp_access_token_provider_cache.get(
                             AccessScope::CloudPlatform,
                             Identity::none(),
                             None,

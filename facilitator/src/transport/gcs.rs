@@ -1,6 +1,6 @@
 use crate::{
     config::{GcsPath, Identity, WorkloadIdentityPoolParameters},
-    gcp_oauth::{AccessScope, GcpAccessTokenProvider},
+    gcp_oauth::{AccessScope, GcpAccessTokenProvider, GcpAccessTokenProviderFactory},
     http::{
         AccessTokenProvider, Method, RequestParameters, RetryingAgent, StaticAccessTokenProvider,
     },
@@ -65,6 +65,7 @@ impl GcsTransport {
         key_file_reader: Option<Box<dyn Read>>,
         workload_identity_pool_params: Option<WorkloadIdentityPoolParameters>,
         runtime_handle: &Handle,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         parent_logger: &Logger,
     ) -> Result<Self> {
         let logger = parent_logger.new(o!(
@@ -86,7 +87,7 @@ impl GcsTransport {
         );
         Ok(GcsTransport {
             path: path.ensure_directory_prefix(),
-            oauth_token_provider: GcpAccessTokenProvider::new(
+            oauth_token_provider: gcp_access_token_provider_cache.get(
                 AccessScope::DevStorageReadWrite,
                 identity,
                 key_file_reader,

@@ -1,6 +1,6 @@
 use crate::{
     config::Identity,
-    gcp_oauth::{AccessScope, GcpAccessTokenProvider},
+    gcp_oauth::{AccessScope, GcpAccessTokenProvider, GcpAccessTokenProviderFactory},
     http::{Method, RequestParameters, RetryingAgent},
     logging::event,
     task::{Task, TaskHandle, TaskQueue},
@@ -113,6 +113,7 @@ impl<T: Task> GcpPubSubTaskQueue<T> {
         subscription_id: &str,
         identity: Identity,
         runtime_handle: &Handle,
+        gcp_access_token_provider_cache: &mut GcpAccessTokenProviderFactory,
         parent_logger: &Logger,
     ) -> Result<Self> {
         let logger = parent_logger.new(o!(
@@ -141,7 +142,7 @@ impl<T: Task> GcpPubSubTaskQueue<T> {
                 .to_owned(),
             gcp_project_id: gcp_project_id.to_string(),
             subscription_id: subscription_id.to_string(),
-            access_token_provider: GcpAccessTokenProvider::new(
+            access_token_provider: gcp_access_token_provider_cache.get(
                 AccessScope::PubSub,
                 identity,
                 // GCP key file; None because PubSub is only used if the
