@@ -187,3 +187,27 @@ jobs:
         file: "workflow-manager/cover.out"
         flags: workflow_manager_tests
         name: workflow-manager tests
+
+  golangci-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run golangci-lint on deploy-tool
+        uses: golangci/golangci-lint-action@v2.5.2
+        with:
+          working-directory: deploy-tool
+      - name: Run golangci-lint on manifest-updater
+        uses: golangci/golangci-lint-action@v2.5.2
+        with:
+          working-directory: manifest-updater
+      - name: Run golangci-lint on manifest-updater
+        uses: golangci/golangci-lint-action@v2.5.2
+        with:
+          working-directory: workflow-manager
+      - name: Run golangci-lint on manifest-updater
+        uses: golangci/golangci-lint-action@v2.5.2
+        with:
+          working-directory: deploy-operator
+      - name: Run golangci-lint on manifest-updater
+        uses: golangci/golangci-lint-action@v2.5.2
+        with:
+          working-directory: task-replayer
