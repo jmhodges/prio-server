@@ -191,6 +191,7 @@ jobs:
   golangci-lint:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v2
       - name: Run golangci-lint on deploy-tool
         uses: golangci/golangci-lint-action@v2.5.2
         with:
