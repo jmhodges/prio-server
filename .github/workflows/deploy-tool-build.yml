@@ -37,17 +37,6 @@ jobs:
         flags: deploy_tool_tests
         name: deploy tool tests
 
-  deploy-tool-lint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v2
-      with:
-        version: v1.31
-        working-directory: deploy-tool
-        args: --timeout 5m
-
   task-replayer:
     runs-on: ubuntu-latest
     steps:
@@ -74,14 +63,3 @@ jobs:
         file: task-replayer/coverage.coverprofile
         flags: task_replayer_tests
         name: task replayer tests
-
-  task-replayer-lint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v2
-      with:
-        version: v1.31
-        working-directory: task-replayer
-        args: --timeout 5m
